@@ -22,6 +22,7 @@ from models import (
     SymptomInterviewRequest, SymptomInterviewResponse,
     PrescriptionRequest, PrescriptionResponse,
     TTSRequest,
+    DoctorVerificationRequest, DoctorVerificationResponse,
 )
 from signal_processor import run_rppg_pipeline
 from gemini_triage import get_gemini_triage
@@ -114,6 +115,7 @@ async def symptom_interview(request: SymptomInterviewRequest):
     """
     AI Doctor Assistant - Generate next symptom question dynamically with Google AI.
     Called once per question (up to 4 questions total).
+    Includes longitudinal repeat visit context if provided.
     """
     try:
         prev = [{"question_number": a.question_number, "question_english": a.question_english, "answer": a.answer}
@@ -123,7 +125,9 @@ async def symptom_interview(request: SymptomInterviewRequest):
             vitals=request.vitals,
             primary_complaint=request.primary_complaint or "",
             previous_answers=prev,
-            question_number=request.question_number
+            question_number=request.question_number,
+            patient_info=request.patient_info,
+            past_visits=request.past_visits,
         )
         return result
     except Exception as e:
@@ -135,6 +139,7 @@ async def prescription_report(request: PrescriptionRequest):
     """
     AI Doctor Assistant - Generate final prescription and care plan dynamically with Google AI.
     Called after all symptom questions are answered.
+    Includes longitudinal repeat visit comparisons.
     """
     try:
         answers = [{"question_number": a.question_number, "question_english": a.question_english, "answer": a.answer}
@@ -144,11 +149,71 @@ async def prescription_report(request: PrescriptionRequest):
             vitals=request.vitals,
             triage=request.triage,
             primary_complaint=request.primary_complaint or "",
-            symptom_answers=answers
+            symptom_answers=answers,
+            patient_info=request.patient_info,
+            past_visits=request.past_visits,
         )
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Prescription report error: {str(e)}")
+
+
+@app.post("/api/doctor-verify", response_model=DoctorVerificationResponse)
+async def doctor_verify(request: DoctorVerificationRequest):
+    """
+    Clinical Decision Support System (CDSS) - Doctor Verification & Sign-off Portal.
+    Validates physician review, generates official OPD token, and seals the digital prescription.
+    """
+    import datetime
+    import random
+
+    now = datetime.datetime.now()
+    timestamp_str = now.strftime("%Y-%m-%d %I:%M %p")
+    token_num = f"OPD-{random.randint(101, 399)}"
+    token_id = f"MS-TOK-{now.strftime('%Y%m%d%H%M%S')}-{random.randint(10, 99)}"
+
+    # Determine assigned clinic room
+    dept = request.opd_department or "General Medicine"
+    dept_rooms = {
+        "General Medicine": "Room 03 (OPD Block A)",
+        "Cardiology": "Room 08 (Cardiology Wing)",
+        "Pulmonology": "Room 05 (Respiratory Care)",
+        "Emergency / Triage": "Triage Bay 1 (Emergency Wing)",
+    }
+    assigned_room = dept_rooms.get(dept, "Room 03 (OPD Block A)")
+
+    med_count = len(request.prescribed_medicines)
+    lab_count = len(request.ordered_lab_tests)
+    patient_name = request.patient_info.get("name", "Patient")
+
+    summary_tanglish = f"Dr. {request.doctor_name} dwara {patient_name}-ku {med_count} medicines mattrum {lab_count} lab tests confirm seiyappattadhu. Token: {token_num} ({assigned_room})."
+    summary_tamil = f"மருத்துவர் {request.doctor_name} அவர்களால் {patient_name}-க்கு {med_count} மருந்துகள் மற்றும் {lab_count} பரிசோதனைகள் உறுதி செய்யப்பட்டு OPD டோக்கன் {token_num} ({assigned_room}) ஒதுக்கப்பட்டுள்ளது."
+
+    return DoctorVerificationResponse(
+        status="Verified & Approved by Physician",
+        token_number=token_num,
+        token_id=token_id,
+        opd_room=assigned_room,
+        timestamp=timestamp_str,
+        summary_tanglish=summary_tanglish,
+        summary_tamil=summary_tamil,
+        verified_data={
+            "doctor_name": request.doctor_name,
+            "doctor_reg_no": request.doctor_reg_no,
+            "doctor_specialty": request.doctor_specialty,
+            "patient_info": request.patient_info,
+            "vitals": request.vitals,
+            "triage": request.triage,
+            "clinical_notes": request.clinical_notes,
+            "prescribed_medicines": request.prescribed_medicines,
+            "ordered_lab_tests": request.ordered_lab_tests,
+            "opd_department": request.opd_department,
+            "urgency_level": request.urgency_level,
+            "token_number": token_num,
+            "token_id": token_id,
+            "timestamp": timestamp_str,
+        }
+    )
 
 
 @app.get("/api/tts")

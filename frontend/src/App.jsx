@@ -55,10 +55,10 @@ export default function App() {
       {/* ── Top Navigation ─────────────────────────────── */}
       <header className="border-b border-slate-800 px-6 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center font-bold text-sm">AG</div>
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center font-bold text-sm text-white">MS</div>
           <div>
-            <h1 className="text-sm font-bold tracking-tight">AntiGravity</h1>
-            <p className="text-xs text-slate-500">rPPG Medical Screening</p>
+            <h1 className="text-sm font-bold tracking-tight">MediSense AI</h1>
+            <p className="text-xs text-slate-500">Contactless rPPG & CDSS</p>
           </div>
         </div>
 
@@ -68,7 +68,7 @@ export default function App() {
             onClick={() => setCurrentPage('doctor')}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-violet-700 bg-violet-900/30 text-violet-300 hover:bg-violet-900/50 hover:text-violet-200 transition-all font-medium"
           >
-            🩺 AI Doctor
+            🩺 MediSense Kiosk & CDSS
           </button>
 
           {/* Backend status */}
@@ -89,17 +89,22 @@ export default function App() {
       {/* ── AI Doctor Assistant Banner ────────────────── */}
       <div
         onClick={() => setCurrentPage('doctor')}
-        className="mx-6 mt-4 p-4 rounded-2xl bg-gradient-to-r from-violet-900/40 to-cyan-900/30 border border-violet-700/60 cursor-pointer hover:border-violet-600 transition-all group"
+        className="mx-6 mt-4 p-4 rounded-2xl bg-gradient-to-r from-violet-900/40 via-cyan-900/30 to-blue-900/20 border border-violet-700/60 cursor-pointer hover:border-violet-500 transition-all group shadow-xl"
       >
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-violet-500 to-cyan-500 flex items-center justify-center text-xl">
-              🩺
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-violet-500 to-cyan-500 flex items-center justify-center text-xl shadow-md">
+              🏥
             </div>
             <div>
-              <p className="text-sm font-bold text-white">AI Doctor Assistant</p>
+              <p className="text-sm font-bold text-white flex items-center gap-2">
+                <span>MediSense AI Kiosk & CDSS Portal</span>
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-900/60 border border-cyan-700 text-cyan-300 font-mono">
+                  3 Registration Modes
+                </span>
+              </p>
               <p className="text-xs text-slate-400">
-                Full patient flow: Scan → Symptom Interview → Prescription Report • Tamil Voice
+                Self-Service / Nurse-Assisted / Returning Patient • Repeat Visit Delta Tracking • Doctor Sign-off
               </p>
             </div>
           </div>

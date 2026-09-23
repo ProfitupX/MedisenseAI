@@ -1,7 +1,7 @@
 """
-Pydantic models for AntiGravity API request/response validation.
+Pydantic models for MediSense AI API request/response validation.
 Includes scientific DSP metrics: BP, Hemoglobin, SQI, SNR, and detailed HRV.
-Also includes Doctor Assistant: Symptom Interview + Prescription Report models.
+Includes Doctor Assistant: Symptom Interview, Longitudinal Vitals, and CDSS Doctor Verification models.
 """
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Any
@@ -69,9 +69,11 @@ class SymptomAnswer(BaseModel):
 
 class SymptomInterviewRequest(BaseModel):
     vitals: Dict[str, Any] = Field(..., description="rPPG vitals from scan")
-    primary_complaint: Optional[str] = Field(default="", description="Chief complaint / primary symptom (e.g., Fever, Cold, Chest pain, or custom text)")
+    primary_complaint: Optional[str] = Field(default="", description="Chief complaint / primary symptom")
     previous_answers: List[SymptomAnswer] = Field(default=[], description="All previous Q&A")
     question_number: int = Field(default=1, ge=1, le=6)
+    patient_info: Optional[Dict[str, Any]] = Field(default=None, description="Patient demographics & ID")
+    past_visits: Optional[List[Dict[str, Any]]] = Field(default=None, description="Previous visit vitals and reports")
 
 
 class SymptomInterviewResponse(BaseModel):
@@ -90,6 +92,8 @@ class PrescriptionRequest(BaseModel):
     triage: Dict[str, Any] = Field(..., description="Triage result")
     primary_complaint: Optional[str] = Field(default="", description="Chief complaint")
     symptom_answers: List[SymptomAnswer] = Field(..., description="All symptom interview answers")
+    patient_info: Optional[Dict[str, Any]] = Field(default=None, description="Patient demographics & ID")
+    past_visits: Optional[List[Dict[str, Any]]] = Field(default=None, description="Previous visit vitals and reports")
 
 
 class MedicineItem(BaseModel):
@@ -98,6 +102,7 @@ class MedicineItem(BaseModel):
     frequency: str
     reason: str
     caution: str
+    duration: Optional[str] = "3-5 days"
 
 
 class PrescriptionResponse(BaseModel):
@@ -115,6 +120,7 @@ class PrescriptionResponse(BaseModel):
     triage_tamil: str
     follow_up: str
     disclaimer: str
+    longitudinal_notes: Optional[str] = None
 
 
 class TTSRequest(BaseModel):
@@ -122,3 +128,30 @@ class TTSRequest(BaseModel):
     voice: Optional[str] = Field(default="female", description="Voice ID: female, male, english, or exact voice code")
     rate: Optional[str] = Field(default="+0%", description="Speech rate adjustment e.g. +0%, -10%")
 
+
+# ── Doctor CDSS Verification Models ────────────────────────────────────────────
+
+class DoctorVerificationRequest(BaseModel):
+    patient_info: Dict[str, Any] = Field(..., description="Patient demographic data")
+    vitals: Dict[str, Any] = Field(..., description="Current rPPG vitals")
+    triage: Dict[str, Any] = Field(..., description="Current AI triage assessment")
+    prescription_report: Dict[str, Any] = Field(..., description="AI generated CDSS draft report")
+    doctor_name: str = Field(default="Dr. A. Senthil Kumar, MBBS, MD", description="Approving doctor name")
+    doctor_reg_no: str = Field(default="TN-84920-MC", description="Medical Council Reg No")
+    doctor_specialty: str = Field(default="General Medicine & CDSS", description="Department / Specialty")
+    clinical_notes: Optional[str] = Field(default="", description="Doctor's clinical findings and advice")
+    prescribed_medicines: List[Dict[str, Any]] = Field(default=[], description="Doctor-approved medicine list")
+    ordered_lab_tests: List[str] = Field(default=[], description="Ordered diagnostic lab investigations")
+    opd_department: str = Field(default="General Medicine", description="Assigned OPD Clinic")
+    urgency_level: str = Field(default="Standard", description="Urgency: Routine, Priority, Urgent")
+
+
+class DoctorVerificationResponse(BaseModel):
+    status: str
+    token_number: str
+    token_id: str
+    opd_room: str
+    timestamp: str
+    summary_tanglish: str
+    summary_tamil: str
+    verified_data: Dict[str, Any]

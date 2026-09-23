@@ -1,12 +1,12 @@
 /**
- * DoctorAssistant.jsx — AI Doctor Assistant Full Patient Flow
- * =============================================================
+ * DoctorAssistant.jsx — MediSense AI Full Clinical Kiosk & CDSS Flow
+ * ====================================================================
  * 5-Step Patient Journey:
- *  Step 1: Welcome Kiosk Screen
- *  Step 2: rPPG Face Scan (30s, uses existing pipeline)
- *  Step 3: Vitals Result + AI Triage Summary
- *  Step 4: Symptom Interview (4 Q&A with Tamil TTS)
- *  Step 5: Final Prescription Report + Triage Decision
+ *  Step 1: Kiosk Registration (Self-Service / Nurse-Assisted / Returning Patient)
+ *  Step 2: Contactless rPPG Face Scan (30s POS/CHROM DSP)
+ *  Step 3: Vitals Result + Repeat Visit Longitudinal Delta Intelligence
+ *  Step 4: AI Symptom Interview (Adaptive to vitals + past visit history)
+ *  Step 5: CDSS Clinical Report + Doctor/Nurse Verification & OPD Token Portal
  */
 
 import React, { useState, useCallback, useEffect } from 'react';
@@ -16,8 +16,12 @@ import WaveChart    from '../components/WaveChart.jsx';
 import ScanProgress from '../components/ScanProgress.jsx';
 import SymptomInterview from '../components/SymptomInterview.jsx';
 import PrescriptionReport from '../components/PrescriptionReport.jsx';
+import KioskModeSelector from '../components/KioskModeSelector.jsx';
+import LongitudinalComparison from '../components/LongitudinalComparison.jsx';
+import DoctorVerificationModal from '../components/DoctorVerificationModal.jsx';
 import { useRPPG }  from '../hooks/useRPPG.js';
 import { useTamilVoice } from '../hooks/useTamilVoice.js';
+import { addVisitToPatient } from '../services/patientStorage.js';
 
 const STEPS = {
   WELCOME:      1,
@@ -28,11 +32,11 @@ const STEPS = {
 };
 
 const STEP_LABELS = {
-  [STEPS.WELCOME]:      'வரவேற்பு',
+  [STEPS.WELCOME]:      'கியோஸ்க் பதிவு',
   [STEPS.SCAN]:         'முக ஸ்கேன்',
   [STEPS.VITALS]:       'உடல் அளவுகள்',
   [STEPS.INTERVIEW]:    'அறிகுறிகள்',
-  [STEPS.PRESCRIPTION]: 'சிகிச்சை அறிக்கை',
+  [STEPS.PRESCRIPTION]: 'CDSS அறிக்கை',
 };
 
 const API_BASE = '/api';
@@ -40,7 +44,11 @@ const API_BASE = '/api';
 export default function DoctorAssistant({ onBack }) {
   const [step, setStep] = useState(STEPS.WELCOME);
 
-  // rPPG state
+  // Kiosk Registration & Patient State
+  const [kioskMode, setKioskMode] = useState('self'); // 'self' | 'nurse' | 'returning'
+  const [activePatient, setActivePatient] = useState(null);
+
+  // rPPG State
   const {
     phase, progress, timeLeft, vitals, triage, scanQuality,
     error, waveBuffer, frameCount,
@@ -57,9 +65,13 @@ export default function DoctorAssistant({ onBack }) {
   const [questionNumber,   setQuestionNumber]    = useState(1);
   const [interviewLoading, setInterviewLoading]  = useState(false);
 
-  // Prescription state
+  // Prescription / CDSS state
   const [prescription, setPrescription] = useState(null);
   const [prescriptionLoading, setPrescriptionLoading] = useState(false);
+
+  // Doctor Verification Portal state
+  const [doctorModalOpen, setDoctorModalOpen] = useState(false);
+  const [doctorToken, setDoctorToken] = useState(null);
 
   const { speak, stopSpeaking, isSpeaking, voice, setVoice } = useTamilVoice();
 
@@ -76,7 +88,7 @@ export default function DoctorAssistant({ onBack }) {
 
     if (step === STEPS.WELCOME) {
       timer = setTimeout(() => {
-        speak('வணக்கம்! ஆண்டிகிராவிட்டி AI மருத்துவ உதவியாளருக்கு நல்வரவு. தொடங்குவதற்கு ஸ்டார்ட் செக்கப் பொத்தானை அழுத்தவும்.');
+        speak('வணக்கம்! மெடிசென்ஸ் AI மருத்துவ உதவியாளருக்கு நல்வரவு. உங்கள் பதிவு முறையை தேர்வு செய்யவும்.');
       }, 400);
     } else if (step === STEPS.SCAN) {
       timer = setTimeout(() => {
@@ -84,7 +96,11 @@ export default function DoctorAssistant({ onBack }) {
       }, 400);
     } else if (step === STEPS.VITALS) {
       timer = setTimeout(() => {
-        speak('அடிப்படை உடல் பரிசோதனை முடிந்தது. அடுத்து உங்கள் உடல் பிரச்சனைகள் மற்றும் அறிகுறிகளைப் பற்றி சொல்லுங்கள்.');
+        if (activePatient?.past_visits?.length > 0) {
+          speak('ஸ்கேன் முடிந்தது. முந்தைய வருகையுடனான உடல் அளவு ஒப்பீடு தயாராக உள்ளது. அடுத்து உங்கள் அறிகுறிகளை தேர்வு செய்யவும்.');
+        } else {
+          speak('அடிப்படை உடல் பரிசோதனை முடிந்தது. அடுத்து உங்கள் உடல் பிரச்சனைகள் மற்றும் அறிகுறிகளைப் பற்றி சொல்லுங்கள்.');
+        }
       }, 400);
     }
 
@@ -92,7 +108,7 @@ export default function DoctorAssistant({ onBack }) {
       if (timer) clearTimeout(timer);
       stopSpeaking();
     };
-  }, [step, speak, stopSpeaking]);
+  }, [step, speak, stopSpeaking, activePatient]);
 
   // ── Auto-advance: scan done → go to vitals ────────────────────────────────
   useEffect(() => {
@@ -134,6 +150,8 @@ export default function DoctorAssistant({ onBack }) {
           primary_complaint: complaint,
           previous_answers: [],
           question_number: 1,
+          patient_info: activePatient,
+          past_visits: activePatient?.past_visits || [],
         }),
       });
       const data = await res.json();
@@ -143,14 +161,14 @@ export default function DoctorAssistant({ onBack }) {
     } finally {
       setInterviewLoading(false);
     }
-  }, [vitals]);
+  }, [vitals, activePatient]);
 
   // ── Generate prescription report ───────────────────────────────────────────
   const generatePrescription = useCallback(async (answers) => {
     stopSpeaking();
     setStep(STEPS.PRESCRIPTION);
     setPrescriptionLoading(true);
-    speak('உங்கள் சிகிச்சை அறிக்கை தயாராகிறது. சற்று பொறுங்கள்...');
+    speak('உங்கள் CDSS சிகிச்சை அறிக்கை தயாராகிறது. சற்று பொறுங்கள்...');
 
     try {
       const res = await fetch(`${API_BASE}/prescription-report`, {
@@ -165,16 +183,29 @@ export default function DoctorAssistant({ onBack }) {
             question_english: a.question_english,
             answer: a.answer,
           })),
+          patient_info: activePatient,
+          past_visits: activePatient?.past_visits || [],
         }),
       });
       const data = await res.json();
       setPrescription(data);
+
+      // Save this visit into patient's local history for future follow-ups
+      if (activePatient?.uhid) {
+        addVisitToPatient(activePatient.uhid, {
+          date: new Date().toLocaleDateString('en-GB') + ' (Today)',
+          primary_complaint: primaryComplaint,
+          vitals: vitals,
+          triage_decision: data.triage_decision,
+          doctor_notes: data.assessment_english,
+        });
+      }
     } catch (err) {
       console.error('Prescription error:', err);
     } finally {
       setPrescriptionLoading(false);
     }
-  }, [vitals, triage, primaryComplaint, speak, stopSpeaking]);
+  }, [vitals, triage, primaryComplaint, activePatient, speak, stopSpeaking]);
 
   // ── Handle interview answer → next question ────────────────────────────────
   const handleAnswer = useCallback(async (answerObj) => {
@@ -182,7 +213,6 @@ export default function DoctorAssistant({ onBack }) {
     setSymptomAnswers(newAnswers);
 
     if (currentQuestion?.is_final || questionNumber >= (currentQuestion?.total_questions || 4)) {
-      // All questions answered → generate prescription
       await generatePrescription(newAnswers);
       return;
     }
@@ -204,6 +234,8 @@ export default function DoctorAssistant({ onBack }) {
             answer: a.answer,
           })),
           question_number: nextQNum,
+          patient_info: activePatient,
+          past_visits: activePatient?.past_visits || [],
         }),
       });
       const data = await res.json();
@@ -214,7 +246,7 @@ export default function DoctorAssistant({ onBack }) {
     } finally {
       setInterviewLoading(false);
     }
-  }, [symptomAnswers, currentQuestion, questionNumber, vitals, primaryComplaint, generatePrescription]);
+  }, [symptomAnswers, currentQuestion, questionNumber, vitals, primaryComplaint, activePatient, generatePrescription]);
 
   // ── Reset everything ────────────────────────────────────────────────────────
   const handleRestart = useCallback(() => {
@@ -227,6 +259,7 @@ export default function DoctorAssistant({ onBack }) {
     setQuestionNumber(1);
     setPrescription(null);
     setFaceDetected(false);
+    setDoctorToken(null);
   }, [reset, stopSpeaking]);
 
   const handleNewScan = useCallback(() => {
@@ -238,6 +271,7 @@ export default function DoctorAssistant({ onBack }) {
     setSymptomAnswers([]);
     setQuestionNumber(1);
     setPrescription(null);
+    setDoctorToken(null);
   }, [reset, stopSpeaking]);
 
   const canScan = phase === 'idle' && faceDetected && backendOk;
@@ -252,6 +286,7 @@ export default function DoctorAssistant({ onBack }) {
       <header className="border-b border-slate-800 px-4 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <button
+            type="button"
             onClick={onBack}
             className="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 flex items-center justify-center text-slate-400 hover:text-slate-200 transition-all"
             title="Back to Dashboard"
@@ -262,8 +297,15 @@ export default function DoctorAssistant({ onBack }) {
             🩺
           </div>
           <div>
-            <h1 className="text-sm font-bold">AI Doctor Assistant</h1>
-            <p className="text-xs text-slate-500">AI மருத்துவ உதவியாளர்</p>
+            <h1 className="text-sm font-bold flex items-center gap-2">
+              <span>MediSense AI</span>
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-950/60 border border-cyan-700 text-cyan-300 font-mono">
+                CDSS Kiosk
+              </span>
+            </h1>
+            <p className="text-xs text-slate-500">
+              {activePatient ? `${activePatient.name} (${activePatient.uhid})` : 'மருத்துவ உதவியாளர் & CDSS'}
+            </p>
           </div>
         </div>
 
@@ -272,9 +314,10 @@ export default function DoctorAssistant({ onBack }) {
           {/* Neural Voice Switcher */}
           <div className="flex items-center bg-slate-800/90 border border-slate-700/80 rounded-full p-0.5 text-xs shadow-inner">
             <button
+              type="button"
               onClick={() => {
                 setVoice('female');
-                speak('வணக்கம்! நான் டாக்டர் பல்லவி, உங்கள் AI மருத்துவ உதவியாளர்.', 'female');
+                speak('வணக்கம்! நான் டாக்டர் பல்லவி, உங்கள் MediSense AI மருத்துவ உதவியாளர்.', 'female');
               }}
               className={`px-2.5 py-1 rounded-full font-medium transition-all flex items-center gap-1 ${
                 voice === 'female'
@@ -286,9 +329,10 @@ export default function DoctorAssistant({ onBack }) {
               <span>👩‍⚕️ பல்லவி</span>
             </button>
             <button
+              type="button"
               onClick={() => {
                 setVoice('male');
-                speak('வணக்கம்! நான் டாக்டர் வள்ளுவர், உங்கள் AI மருத்துவர்.', 'male');
+                speak('வணக்கம்! நான் டாக்டர் வள்ளுவர், உங்கள் MediSense AI மருத்துவர்.', 'male');
               }}
               className={`px-2.5 py-1 rounded-full font-medium transition-all flex items-center gap-1 ${
                 voice === 'male'
@@ -303,6 +347,7 @@ export default function DoctorAssistant({ onBack }) {
 
           {/* Test Voice Button */}
           <button
+            type="button"
             onClick={() => {
               const testMsg = voice === 'female'
                 ? 'வணக்கம்! நான் டாக்டர் பல்லவி. உங்கள் உடல் அளவுகளை பரிசோதிக்க தயாராக உள்ளேன்.'
@@ -344,98 +389,82 @@ export default function DoctorAssistant({ onBack }) {
             </div>
           ))}
         </div>
-        <p className="text-center text-xs text-slate-500 mt-1.5">
-          {STEP_LABELS[step]}
+        <p className="text-center text-xs text-slate-400 mt-1.5 font-medium">
+          {STEP_LABELS[step]} {activePatient ? `• ${activePatient.name}` : ''}
         </p>
       </div>
 
       {/* ── Main Content ─────────────────────────────────────────────────────── */}
       <main className="flex-1 overflow-y-auto">
-        <div className="max-w-lg mx-auto px-4 py-6">
+        <div className="max-w-2xl mx-auto px-4 py-6">
 
           {/* ════════════════════════════════════════════════════════════════════
-              STEP 1: WELCOME
+              STEP 1: KIOSK REGISTRATION (3 MODES)
           ════════════════════════════════════════════════════════════════════ */}
           {step === STEPS.WELCOME && (
-            <div className="space-y-8 text-center animate-fade-in">
-              {/* Hero Icon */}
-              <div className="pt-6">
-                <div className="w-24 h-24 mx-auto rounded-full bg-gradient-to-br from-violet-600 to-cyan-500 flex items-center justify-center text-5xl shadow-2xl shadow-violet-900/50 mb-6">
+            <div className="space-y-6 text-center animate-fade-in">
+              <div className="pt-2">
+                <div className="w-20 h-20 mx-auto rounded-full bg-gradient-to-br from-violet-600 to-cyan-500 flex items-center justify-center text-4xl shadow-2xl shadow-violet-900/50 mb-4">
                   🏥
                 </div>
-                <h2 className="text-2xl font-bold text-white mb-2">
-                  AI Doctor Assistant
+                <h2 className="text-2xl font-bold text-white mb-1">
+                  MediSense AI Kiosk
                 </h2>
-                <p className="text-base text-cyan-400 font-medium mb-1">
-                  உங்கள் AI மருத்துவ உதவியாளர்
+                <p className="text-sm text-cyan-400 font-medium mb-1">
+                  Contactless rPPG Triage & CDSS System
                 </p>
-                <p className="text-sm text-slate-400 leading-relaxed max-w-xs mx-auto">
-                  Advanced rPPG scan + AI symptom interview + Tamil voice guidance
+                <p className="text-xs text-slate-400 leading-relaxed max-w-sm mx-auto">
+                  3 Registration Modes • Repeat Visit Longitudinal Tracking • Doctor Sign-off
                 </p>
               </div>
 
-              {/* Feature List */}
-              <div className="bg-slate-800/50 border border-slate-700 rounded-2xl p-5 text-left space-y-3">
-                {[
-                  { icon: '📷', en: 'Face scan — 30 second rPPG', ta: 'முக ஸ்கேன் — 30 விநாடி rPPG' },
-                  { icon: '💓', en: 'Heart rate, BP, SpO₂, Hemoglobin', ta: 'இதய துடிப்பு, இரத்த அழுத்தம், ஆக்சிஜன்' },
-                  { icon: '🤖', en: 'AI symptom interview in Tamil', ta: 'AI அறிகுறி நேர்காணல் — தமிழில்' },
-                  { icon: '💊', en: 'Personalized care plan + medicines', ta: 'தனிப்பட்ட மருத்துவ திட்டம்' },
-                  { icon: '🔈', en: 'Tamil voice guidance (TTS/STT)', ta: 'தமிழ் குரல் வழிகாட்டுதல்' },
-                ].map((item, idx) => (
-                  <div key={idx} className="flex items-start gap-3">
-                    <span className="text-xl">{item.icon}</span>
-                    <div>
-                      <p className="text-sm text-slate-200">{item.en}</p>
-                      <p className="text-xs text-slate-500" style={{ fontFamily: 'Noto Sans Tamil, sans-serif' }}>
-                        {item.ta}
-                      </p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              {/* Backend Warning */}
-              {backendOk === false && (
-                <div className="bg-red-900/20 border border-red-700 rounded-xl p-3 text-left">
-                  <p className="text-red-400 text-xs font-mono mb-1">⚠️ Backend offline</p>
-                  <pre className="text-xs text-green-400 bg-slate-900 rounded p-2 overflow-x-auto">
-{`cd backend
-python main.py`}
-                  </pre>
-                </div>
-              )}
-
-              {/* Start Button */}
-              <button
-                onClick={() => {
+              {/* 3 Kiosk Modes Component */}
+              <KioskModeSelector
+                selectedMode={kioskMode}
+                onSelectMode={setKioskMode}
+                activePatient={activePatient}
+                onSelectPatient={setActivePatient}
+                onProceed={() => {
                   stopSpeaking();
                   setStep(STEPS.SCAN);
                 }}
-                disabled={backendOk === false}
-                className={`w-full py-4 rounded-2xl font-bold text-base transition-all duration-200
-                  ${backendOk !== false
-                    ? 'bg-gradient-to-r from-violet-600 to-cyan-600 hover:from-violet-500 hover:to-cyan-500 text-white shadow-2xl shadow-violet-900/40 hover:shadow-violet-900/60 hover:scale-[1.02] active:scale-[0.98]'
-                    : 'bg-slate-800 text-slate-600 cursor-not-allowed'
-                  }`}
-              >
-                🏥 Start Checkup / பரிசோதனை தொடங்கு
-              </button>
+                speak={speak}
+              />
 
-              <p className="text-xs text-slate-600 pb-4">
-                ⚕️ This AI system assists in preliminary screening only — not a replacement for clinical diagnosis.
-              </p>
+              {/* Feature Highlights */}
+              <div className="bg-slate-800/40 border border-slate-700/60 rounded-2xl p-4 text-left grid grid-cols-2 gap-3 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="text-base">📷</span>
+                  <span className="text-slate-300">Contactless 30s rPPG</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-base">📈</span>
+                  <span className="text-slate-300">Longitudinal Vitals Delta</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-base">🗣️</span>
+                  <span className="text-slate-300">Tamil AI Neural Voice</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-base">👨‍⚕️</span>
+                  <span className="text-slate-300">Doctor CDSS OPD Tokens</span>
+                </div>
+              </div>
             </div>
           )}
 
           {/* ════════════════════════════════════════════════════════════════════
-              STEP 2: SCAN
+              STEP 2: SCAN (with Nurse Accessibility Accommodations)
           ════════════════════════════════════════════════════════════════════ */}
           {step === STEPS.SCAN && (
-            <div className="space-y-4 animate-fade-in">
+            <div className="space-y-4 animate-fade-in text-left">
               <div className="text-center mb-2">
-                <h2 className="text-lg font-bold text-white">முக ஸ்கேன்</h2>
-                <p className="text-sm text-slate-400">Position your face — 30 second rPPG scan</p>
+                <h2 className="text-lg font-bold text-white">
+                  {kioskMode === 'nurse' ? '👩‍⚕️ முக ஸ்கேன் (Face Scan)' : 'முக ஸ்கேன் (Contactless rPPG)'}
+                </h2>
+                <p className="text-xs text-slate-400">
+                  {activePatient ? `Patient: ${activePatient.name} (${activePatient.uhid})` : 'Position your face in the camera'}
+                </p>
               </div>
 
               {/* Camera */}
@@ -452,7 +481,7 @@ python main.py`}
                 <WaveChart
                   waveBuffer={waveBuffer}
                   phase={phase}
-                  title="rPPG Signal"
+                  title="rPPG Signal (POS/CHROM Algorithm)"
                 />
               )}
 
@@ -467,32 +496,33 @@ python main.py`}
               {/* Controls */}
               <div className="grid grid-cols-2 gap-3">
                 <button
+                  type="button"
                   onClick={startScan}
                   disabled={!canScan || isActive}
-                  className={`py-3.5 rounded-xl font-semibold text-sm transition-all
-                    ${canScan && !isActive
-                      ? 'bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white shadow-lg'
+                  className={`py-4 rounded-xl font-bold text-sm transition-all ${
+                    canScan && !isActive
+                      ? 'bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white shadow-lg scale-[1.01]'
                       : 'bg-slate-800 text-slate-600 cursor-not-allowed'
-                    }`}
+                  }`}
                 >
-                  {isActive ? '⏳ Scanning...' : '▶ Start Scan'}
+                  {isActive ? '⏳ Scanning (இயங்குகிறது)...' : '▶ Start 30s Scan (தொடங்கு)'}
                 </button>
                 <button
+                  type="button"
                   onClick={phase === 'scanning' ? stopScan : handleRestart}
                   disabled={phase === 'idle' || phase === 'analyzing'}
-                  className="py-3.5 rounded-xl font-semibold text-sm bg-slate-700 hover:bg-slate-600 text-slate-200 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="py-4 rounded-xl font-bold text-sm bg-slate-700 hover:bg-slate-600 text-slate-200 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  {phase === 'scanning' ? '⏹ Stop' : '↺ Reset'}
+                  {phase === 'scanning' ? '⏹ Stop Early' : '↺ Reset'}
                 </button>
               </div>
 
               {/* Guidance */}
-              <div className="text-center text-xs text-slate-500">
-                {!faceDetected  && 'Unga mugaththa camera-la vaikavum / Position face in camera'}
-                {faceDetected   && phase === 'idle' && backendOk === false && '⚠️ Start Python backend first'}
-                {faceDetected   && phase === 'idle' && backendOk === true  && '✅ Ready — Start scan-a press pannunga!'}
-                {phase === 'scanning'  && `📡 rPPG data collect panrathu... still-ah iru! (${timeLeft}s)`}
-                {phase === 'analyzing' && '🧠 AI analyzing vitals...'}
+              <div className="text-center text-xs text-slate-400">
+                {!faceDetected  && 'கேமராவின் முன் அமரவும் / Position face inside frame'}
+                {faceDetected   && phase === 'idle' && backendOk === true && '✅ முகம் கண்டறியப்பட்டது — Start Scan அழுத்தவும்!'}
+                {phase === 'scanning'  && `📡 rPPG அலைகள் சேகரிக்கப்படுகிறது... (${timeLeft}s)`}
+                {phase === 'analyzing' && '🧠 AI analyzing vitals & running Welch PSD...'}
               </div>
 
               {error && (
@@ -504,31 +534,41 @@ python main.py`}
           )}
 
           {/* ════════════════════════════════════════════════════════════════════
-              STEP 3: VITALS RESULT
+              STEP 3: VITALS RESULT & REPEAT VISIT LONGITUDINAL COMPARISON
           ════════════════════════════════════════════════════════════════════ */}
           {step === STEPS.VITALS && vitals && (
-            <div className="space-y-5 animate-fade-in">
+            <div className="space-y-5 animate-fade-in text-left">
               <div className="text-center">
-                <div className="text-3xl mb-2">✅</div>
+                <div className="text-3xl mb-1">✅</div>
                 <h2 className="text-lg font-bold text-white">Scan Complete!</h2>
-                <p className="text-sm text-cyan-400">Unga vitals ready — Paakalam!</p>
+                <p className="text-xs text-cyan-400">
+                  {activePatient ? `Results for ${activePatient.name} (${activePatient.uhid})` : 'உடல் அளவுகள் தயார்'}
+                </p>
               </div>
+
+              {/* Repeat Visit Longitudinal Comparison (if returning patient has prior visit) */}
+              {activePatient?.past_visits?.length > 0 && (
+                <LongitudinalComparison
+                  currentVitals={vitals}
+                  pastVisits={activePatient.past_visits}
+                />
+              )}
 
               {/* Triage Risk Banner */}
               {triage && (
-                <div className={`rounded-2xl p-4 border text-center
-                  ${triage.risk_color === 'green' ? 'bg-green-900/30 border-green-700'
+                <div className={`rounded-2xl p-4 border text-center ${
+                  triage.risk_color === 'green' ? 'bg-green-900/30 border-green-700'
                   : triage.risk_color === 'amber'  ? 'bg-amber-900/30 border-amber-700'
-                  : 'bg-red-900/30 border-red-700'}`}
-                >
-                  <p className={`font-bold text-lg mb-1
-                    ${triage.risk_color === 'green' ? 'text-green-400'
+                  : 'bg-red-900/30 border-red-700'
+                }`}>
+                  <p className={`font-bold text-base mb-1 ${
+                    triage.risk_color === 'green' ? 'text-green-400'
                     : triage.risk_color === 'amber'  ? 'text-amber-400'
-                    : 'text-red-400'}`}
-                  >
+                    : 'text-red-400'
+                  }`}>
                     {triage.risk_level === 'Stable' ? '🟢' : triage.risk_level === 'Alert' ? '🟡' : '🔴'} {triage.risk_level}
                   </p>
-                  <p className="text-sm text-slate-300">{triage.advice_tanglish}</p>
+                  <p className="text-xs text-slate-300">{triage.advice_tanglish}</p>
                 </div>
               )}
 
@@ -536,13 +576,11 @@ python main.py`}
               <VitalsPanel vitals={vitals} />
 
               {/* Continue to Interview */}
-              <div className="space-y-3 pt-3">
-                <p className="text-center text-xs text-slate-400 leading-relaxed">
-                  அடிப்படை உடல் பரிசோதனை முடிந்தது. அடுத்து உங்கள் அறிகுறிகளைப் பதிவு செய்யுங்கள்.
-                </p>
+              <div className="space-y-3 pt-2">
                 <button
+                  type="button"
                   onClick={startInterview}
-                  className="w-full py-4 rounded-2xl font-bold text-base bg-gradient-to-r from-violet-600 via-cyan-600 to-blue-600 hover:from-violet-500 hover:to-cyan-500 text-white shadow-2xl shadow-violet-900/40 transition-all hover:scale-[1.01] active:scale-[0.98] flex items-center justify-center gap-2"
+                  className="w-full py-4 rounded-2xl font-bold text-sm bg-gradient-to-r from-violet-600 via-cyan-600 to-blue-600 hover:from-violet-500 hover:to-cyan-500 text-white shadow-2xl shadow-violet-900/40 transition-all hover:scale-[1.01] active:scale-[0.98] flex items-center justify-center gap-2"
                 >
                   <span>🩺</span>
                   <span>அறிகுறிகளைப் பதிவு செய்க (Start Symptom Check)</span>
@@ -556,7 +594,7 @@ python main.py`}
               STEP 4: SYMPTOM INTERVIEW
           ════════════════════════════════════════════════════════════════════ */}
           {step === STEPS.INTERVIEW && (
-            <div className="space-y-4 animate-fade-in">
+            <div className="space-y-4 animate-fade-in text-left">
               <SymptomInterview
                 primaryComplaint={primaryComplaint}
                 onSelectComplaint={handleSelectComplaint}
@@ -568,23 +606,18 @@ python main.py`}
           )}
 
           {/* ════════════════════════════════════════════════════════════════════
-              STEP 5: PRESCRIPTION REPORT
+              STEP 5: CDSS PRESCRIPTION REPORT & DOCTOR VERIFICATION
           ════════════════════════════════════════════════════════════════════ */}
           {step === STEPS.PRESCRIPTION && (
-            <div className="space-y-4 animate-fade-in">
-              <div className="text-center">
-                <h2 className="text-lg font-bold text-white">சிகிச்சை அறிக்கை</h2>
-                <p className="text-sm text-slate-400">AI Health Report</p>
-              </div>
-
+            <div className="space-y-4 animate-fade-in text-left">
               {prescriptionLoading ? (
                 <div className="text-center py-16 space-y-4">
                   <div className="w-16 h-16 mx-auto rounded-full bg-violet-900/40 border-2 border-violet-700 flex items-center justify-center text-3xl animate-pulse">
                     🤖
                   </div>
-                  <p className="text-violet-400 font-medium">AI report tayar panrathu...</p>
-                  <p className="text-slate-500 text-sm" style={{ fontFamily: 'Noto Sans Tamil, sans-serif' }}>
-                    AI அறிக்கை தயாரிக்கிறது...
+                  <p className="text-violet-400 font-medium text-sm">CDSS Clinical Assessment Generating...</p>
+                  <p className="text-slate-500 text-xs" style={{ fontFamily: 'Noto Sans Tamil, sans-serif' }}>
+                    AI சிகிச்சை அறிக்கை தயாரிக்கிறது...
                   </p>
                   <div className="flex justify-center gap-1 mt-4">
                     {[0, 1, 2].map(i => (
@@ -597,12 +630,32 @@ python main.py`}
                   </div>
                 </div>
               ) : prescription ? (
-                <PrescriptionReport
-                  report={prescription}
-                  vitals={vitals}
-                  onNewScan={handleNewScan}
-                  onRestart={handleRestart}
-                />
+                <>
+                  <PrescriptionReport
+                    report={prescription}
+                    vitals={vitals}
+                    patient={activePatient}
+                    pastVisits={activePatient?.past_visits || []}
+                    triage={triage}
+                    onNewScan={handleNewScan}
+                    onRestart={handleRestart}
+                    onOpenDoctorModal={() => setDoctorModalOpen(true)}
+                    doctorToken={doctorToken}
+                  />
+
+                  {/* Doctor Verification Modal Dialog */}
+                  <DoctorVerificationModal
+                    isOpen={doctorModalOpen}
+                    onClose={() => setDoctorModalOpen(false)}
+                    patient={activePatient}
+                    vitals={vitals}
+                    triage={triage}
+                    report={prescription}
+                    onVerificationComplete={(tokenData) => {
+                      setDoctorToken(tokenData);
+                    }}
+                  />
+                </>
               ) : null}
             </div>
           )}
@@ -612,8 +665,8 @@ python main.py`}
 
       {/* ── Footer ──────────────────────────────────────────────────────────── */}
       <footer className="border-t border-slate-800 px-4 py-2 text-center">
-        <p className="text-xs text-slate-700">
-          ⚕️ AI preliminary screening only — Not a substitute for clinical diagnosis
+        <p className="text-[11px] text-slate-600">
+          ⚕️ MediSense AI is a Clinical Decision Support System (CDSS) for preliminary screening • Verified by Licensed Practitioners
         </p>
       </footer>
     </div>

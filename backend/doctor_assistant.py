@@ -150,11 +150,14 @@ def generate_symptom_question(
     vitals: Dict,
     primary_complaint: str,
     previous_answers: List[Dict],
-    question_number: int
+    question_number: int,
+    patient_info: Optional[Dict] = None,
+    past_visits: Optional[List[Dict]] = None,
 ) -> Dict:
     """
     Generate next interview question dynamically using real Google AI.
     Falls back to the Adaptive Clinical Engine if AI is unreachable.
+    Integrates longitudinal past visit context if available.
     """
     if _API_KEY and _API_KEY != "YOUR_GEMINI_API_KEY_HERE":
         hr = vitals.get("heart_rate_bpm", 75)
@@ -171,13 +174,27 @@ def generate_symptom_question(
             for item in previous_answers:
                 qa_history += f"- Question: {item.get('question_english', '')}\n  Answer: {item.get('answer', '')}\n"
 
-        clinical_context = f"""PATIENT VITALS:
+        longitudinal_str = ""
+        if past_visits and len(past_visits) > 0:
+            longitudinal_str = "\nPATIENT REPEAT VISIT HISTORY (Longitudinal comparison):\n"
+            for pv in past_visits:
+                pv_date = pv.get("date", "Previous Visit")
+                pv_vitals = pv.get("vitals", {})
+                pv_bp = pv_vitals.get("blood_pressure", {})
+                longitudinal_str += f"- Visit on {pv_date}: HR {pv_vitals.get('heart_rate_bpm')} BPM, BP {pv_bp.get('sbp')}/{pv_bp.get('dbp')}, SpO2 {pv_vitals.get('spo2_percent')}%, Hb {pv_vitals.get('hemoglobin_g_dl')} g/dL. Complaint: {pv.get('primary_complaint', 'N/A')}\n"
+            longitudinal_str += "Note: Inquire about progression, new developments, or treatment response since last visit.\n"
+
+        patient_demographics = ""
+        if patient_info:
+            patient_demographics = f"Patient Profile: {patient_info.get('name', 'Patient')}, {patient_info.get('age', 'N/A')}y/{patient_info.get('gender', 'N/A')}, UHID: {patient_info.get('uhid', 'N/A')}\n"
+
+        clinical_context = f"""{patient_demographics}CURRENT SCAN VITALS:
 - Heart Rate: {hr} BPM
 - SpO2: {spo2}%
 - Blood Pressure: {sbp}/{dbp} mmHg ({bp.get('category', 'Normal')})
 - Respiration Rate: {rr} BrPM
 - Hemoglobin: {hb} g/dL
-
+{longitudinal_str}
 CHIEF COMPLAINT: {primary_complaint or 'General feeling unwell'}
 {qa_history}
 Current Question Index: {question_number} of 4.
@@ -234,11 +251,14 @@ def generate_prescription_report(
     vitals: Dict,
     triage: Dict,
     primary_complaint: str,
-    symptom_answers: List[Dict]
+    symptom_answers: List[Dict],
+    patient_info: Optional[Dict] = None,
+    past_visits: Optional[List[Dict]] = None,
 ) -> Dict:
     """
     Generate dynamic prescription & care plan using real Google AI,
     or the comprehensive Clinical Pharmacology Engine fallback.
+    Includes longitudinal repeat visit trends.
     """
     if _API_KEY and _API_KEY != "YOUR_GEMINI_API_KEY_HERE":
         hr = vitals.get("heart_rate_bpm", 75)
@@ -254,16 +274,34 @@ def generate_prescription_report(
         for item in symptom_answers:
             qa_text += f"- Q: {item.get('question_english', '')}\n  A: {item.get('answer', '')}\n"
 
+        longitudinal_str = ""
+        if past_visits and len(past_visits) > 0:
+            longitudinal_str = "\nREPEAT VISIT LONGITUDINAL COMPARISON:\n"
+            for pv in past_visits:
+                pv_date = pv.get("date", "Previous Visit")
+                pv_vitals = pv.get("vitals", {})
+                pv_bp = pv_vitals.get("blood_pressure", {})
+                prev_sbp = pv_bp.get("sbp", sbp)
+                prev_hr = pv_vitals.get("heart_rate_bpm", hr)
+                delta_sbp = sbp - prev_sbp
+                delta_hr = hr - prev_hr
+                longitudinal_str += f"- Prior Visit ({pv_date}): HR {prev_hr} BPM, BP {prev_sbp}/{pv_bp.get('dbp')}, SpO2 {pv_vitals.get('spo2_percent')}%, Hb {pv_vitals.get('hemoglobin_g_dl')} g/dL\n"
+                longitudinal_str += f"  Trend: Delta SBP = {delta_sbp:+d} mmHg, Delta HR = {delta_hr:+d} BPM\n"
+
+        patient_demographics = ""
+        if patient_info:
+            patient_demographics = f"Patient: {patient_info.get('name', 'Patient')}, {patient_info.get('age', 'N/A')}y/{patient_info.get('gender', 'N/A')}, UHID: {patient_info.get('uhid', 'N/A')}\n"
+
         clinical_profile = f"""PATIENT CLINICAL PROFILE:
-Vitals:
+{patient_demographics}Current Vitals:
 - HR: {hr} BPM | SpO2: {spo2}% | BP: {sbp}/{dbp} mmHg ({bp.get('category', 'Normal')})
 - RR: {rr} BrPM | Hb: {hb} g/dL | Triage Risk: {risk}
-
+{longitudinal_str}
 Chief Complaint: {primary_complaint or 'Unspecified'}
 Symptom Interview Answers:
 {qa_text}
 
-Generate a complete, personalized preliminary medical assessment, specific OTC medicines, home care remedies, and triage level."""
+Generate a complete, personalized preliminary medical assessment, specific OTC medicines, home care remedies, triage level, and summarize any longitudinal trend."""
 
         for model_name in MODELS_TO_TRY:
             try:
@@ -304,7 +342,7 @@ Output ONLY the raw JSON object matching the schema."""
                 logger.warning(f"AI model {model_name} prescription failed ({e}), trying next...")
 
     # Comprehensive Clinical Pharmacology Engine fallback
-    return _adaptive_clinical_prescription(vitals, triage, primary_complaint, symptom_answers)
+    return _adaptive_clinical_prescription(vitals, triage, primary_complaint, symptom_answers, past_visits)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -499,11 +537,13 @@ def _adaptive_clinical_prescription(
     vitals: Dict,
     triage: Dict,
     primary_complaint: str,
-    symptom_answers: List[Dict]
+    symptom_answers: List[Dict],
+    past_visits: Optional[List[Dict]] = None,
 ) -> Dict:
     """
     Intelligent pharmacology & triage synthesizer.
     Produces nuanced, medically accurate prescriptions matching the exact complaint + vitals.
+    Incorporates repeat visit longitudinal comparison.
     """
     hr = vitals.get("heart_rate_bpm", 75)
     spo2 = vitals.get("spo2_percent", 98)
@@ -521,6 +561,26 @@ def _adaptive_clinical_prescription(
     conditions = []
     home_care = []
     home_care_tamil = []
+
+    # Calculate Longitudinal Notes
+    longitudinal_notes = None
+    if past_visits and len(past_visits) > 0:
+        latest_past = past_visits[0]
+        past_v = latest_past.get("vitals", {})
+        past_bp = past_v.get("blood_pressure", {})
+        p_hr = past_v.get("heart_rate_bpm", hr)
+        p_sbp = past_bp.get("sbp", sbp)
+        p_spo2 = past_v.get("spo2_percent", spo2)
+        p_date = latest_past.get("date", "previous visit")
+        
+        delta_sbp = sbp - p_sbp
+        delta_hr = hr - p_hr
+        delta_spo2 = spo2 - p_spo2
+
+        if delta_sbp > 12 or delta_hr > 15 or delta_spo2 < -3:
+            longitudinal_notes = f"⚠️ Worsening Trend: Compared to {p_date}, SBP changed by {delta_sbp:+d} mmHg, HR by {delta_hr:+d} BPM, and SpO2 by {delta_spo2:+.1f}%. Clinical review advised."
+        else:
+            longitudinal_notes = f"✅ Stable / Improving Trend: Vitals are within expected variation compared to visit on {p_date} (ΔSBP: {delta_sbp:+d} mmHg, ΔHR: {delta_hr:+d} BPM)."
 
     # 1. Condition & Medicine Logic based on complaint + vitals
     is_fever = any(w in comp for w in ["fever", "காய்ச்சல்", "சூடு"]) or any(w in answers_str for w in ["fever", "காய்ச்சல்", "நடுக்கம்"])
@@ -701,5 +761,6 @@ def _adaptive_clinical_prescription(
         "triage_tanglish": triage_tanglish,
         "triage_tamil": triage_tamil,
         "follow_up": follow_up,
-        "disclaimer": "இந்த பரிசோதனை முதற்கட்ட AI ஆய்வறிக்கை மட்டுமே. நேரடி மருத்துவ ஆலோசனையை மாற்றாது. / This is preliminary AI screening only."
+        "disclaimer": "இந்த பரிசோதனை முதற்கட்ட AI ஆய்வறிக்கை மட்டுமே. நேரடி மருத்துவ ஆலோசனையை மாற்றாது. / This is preliminary AI screening only.",
+        "longitudinal_notes": longitudinal_notes
     }
