@@ -1,0 +1,44 @@
+# Environment variables & API keys
+.env
+*.env
+backend/.env
+backend/.env.local
+frontend/.env
+frontend/.env.local
+
+# Node modules & builds
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+build/
+.next/
+
+# Python cache & virtualenvs
+__pycache__/
+backend/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# Temporary audio debug / logs
+backend/raw_gemma_debug.txt
+backend/*.mp3
+*.log
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Gemini & Agent Artifacts / internal caches
+.gemini/
+scratch/
