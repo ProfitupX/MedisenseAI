@@ -121,6 +121,10 @@ class PrescriptionResponse(BaseModel):
     follow_up: str
     disclaimer: str
     longitudinal_notes: Optional[str] = None
+    assigned_role: str = Field(default="nurse", description="doctor (high risk/emergency) or nurse (normal/stable)")
+    assigned_destination: str = Field(default="Nurse Triage & Wellness Desk", description="Assigned clinical destination")
+    routing_advice_tamil: str = Field(default="", description="Bilingual routing instruction")
+    routing_advice_tanglish: str = Field(default="", description="Bilingual routing instruction")
 
 
 class TTSRequest(BaseModel):
@@ -129,20 +133,21 @@ class TTSRequest(BaseModel):
     rate: Optional[str] = Field(default="+0%", description="Speech rate adjustment e.g. +0%, -10%")
 
 
-# ── Doctor CDSS Verification Models ────────────────────────────────────────────
+# ── Doctor & Nurse CDSS Verification Models ────────────────────────────────────
 
 class DoctorVerificationRequest(BaseModel):
     patient_info: Dict[str, Any] = Field(..., description="Patient demographic data")
     vitals: Dict[str, Any] = Field(..., description="Current rPPG vitals")
     triage: Dict[str, Any] = Field(..., description="Current AI triage assessment")
     prescription_report: Dict[str, Any] = Field(..., description="AI generated CDSS draft report")
-    doctor_name: str = Field(default="Dr. A. Senthil Kumar, MBBS, MD", description="Approving doctor name")
-    doctor_reg_no: str = Field(default="TN-84920-MC", description="Medical Council Reg No")
+    verifier_role: str = Field(default="doctor", description="doctor or nurse")
+    doctor_name: str = Field(default="Dr. A. Senthil Kumar, MBBS, MD", description="Approving clinician/nurse name")
+    doctor_reg_no: str = Field(default="TN-84920-MC", description="Medical Council or Nursing Reg No")
     doctor_specialty: str = Field(default="General Medicine & CDSS", description="Department / Specialty")
-    clinical_notes: Optional[str] = Field(default="", description="Doctor's clinical findings and advice")
-    prescribed_medicines: List[Dict[str, Any]] = Field(default=[], description="Doctor-approved medicine list")
+    clinical_notes: Optional[str] = Field(default="", description="Clinician's findings and guidance")
+    prescribed_medicines: List[Dict[str, Any]] = Field(default=[], description="Approved medicine list")
     ordered_lab_tests: List[str] = Field(default=[], description="Ordered diagnostic lab investigations")
-    opd_department: str = Field(default="General Medicine", description="Assigned OPD Clinic")
+    opd_department: str = Field(default="General Medicine", description="Assigned OPD Clinic / Desk")
     urgency_level: str = Field(default="Standard", description="Urgency: Routine, Priority, Urgent")
 
 
@@ -151,6 +156,7 @@ class DoctorVerificationResponse(BaseModel):
     token_number: str
     token_id: str
     opd_room: str
+    verifier_role: str
     timestamp: str
     summary_tanglish: str
     summary_tamil: str

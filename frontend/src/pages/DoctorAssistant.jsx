@@ -1,15 +1,15 @@
 /**
  * DoctorAssistant.jsx — MediSense AI Full Clinical Kiosk & CDSS Flow
  * ====================================================================
- * 5-Step Patient Journey:
- *  Step 1: Kiosk Registration (Self-Service / Nurse-Assisted / Returning Patient)
- *  Step 2: Contactless rPPG Face Scan (30s POS/CHROM DSP)
+ * Real-Time 5-Step Patient Journey:
+ *  Step 1: Kiosk Registration (Live Camera with Face ID Lock & Returning Auto-Scan)
+ *  Step 2: 30s Contactless rPPG Face Scan (POS/CHROM Algorithm)
  *  Step 3: Vitals Result + Repeat Visit Longitudinal Delta Intelligence
- *  Step 4: AI Symptom Interview (Adaptive to vitals + past visit history)
- *  Step 5: CDSS Clinical Report + Doctor/Nurse Verification & OPD Token Portal
+ *  Step 4: AI Symptom Interview (Adaptive to Vitals + Past Visit History)
+ *  Step 5: CDSS Clinical Report + Severity Routing (Doctor vs Nurse Tokens)
  */
 
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import FaceCapture  from '../components/FaceCapture.jsx';
 import VitalsPanel  from '../components/VitalsPanel.jsx';
 import WaveChart    from '../components/WaveChart.jsx';
@@ -21,7 +21,7 @@ import LongitudinalComparison from '../components/LongitudinalComparison.jsx';
 import DoctorVerificationModal from '../components/DoctorVerificationModal.jsx';
 import { useRPPG }  from '../hooks/useRPPG.js';
 import { useTamilVoice } from '../hooks/useTamilVoice.js';
-import { addVisitToPatient } from '../services/patientStorage.js';
+import { patientDb } from '../services/patientDb.js';
 
 const STEPS = {
   WELCOME:      1,
@@ -32,11 +32,11 @@ const STEPS = {
 };
 
 const STEP_LABELS = {
-  [STEPS.WELCOME]:      'கியோஸ்க் பதிவு',
+  [STEPS.WELCOME]:      'கியோஸ்க் பதிவு (Face ID)',
   [STEPS.SCAN]:         'முக ஸ்கேன்',
   [STEPS.VITALS]:       'உடல் அளவுகள்',
   [STEPS.INTERVIEW]:    'அறிகுறிகள்',
-  [STEPS.PRESCRIPTION]: 'CDSS அறிக்கை',
+  [STEPS.PRESCRIPTION]: 'CDSS அறிக்கை & டோக்கன்',
 };
 
 const API_BASE = '/api';
@@ -44,9 +44,10 @@ const API_BASE = '/api';
 export default function DoctorAssistant({ onBack }) {
   const [step, setStep] = useState(STEPS.WELCOME);
 
-  // Kiosk Registration & Patient State
-  const [kioskMode, setKioskMode] = useState('self'); // 'self' | 'nurse' | 'returning'
+  // Patient & Face ID State
   const [activePatient, setActivePatient] = useState(null);
+  const [liveLandmarks, setLiveLandmarks] = useState(null);
+  const videoElementRef = useRef(null);
 
   // rPPG State
   const {
@@ -69,26 +70,34 @@ export default function DoctorAssistant({ onBack }) {
   const [prescription, setPrescription] = useState(null);
   const [prescriptionLoading, setPrescriptionLoading] = useState(false);
 
-  // Doctor Verification Portal state
+  // Doctor/Nurse Verification Portal state
   const [doctorModalOpen, setDoctorModalOpen] = useState(false);
   const [doctorToken, setDoctorToken] = useState(null);
 
   const { speak, stopSpeaking, isSpeaking, voice, setVoice } = useTamilVoice();
 
-  // ── Backend health check ─────────────────────────────────────────────────────
+  // ── Backend Health Check ───────────────────────────────────────────────────
   useEffect(() => {
     fetch(`${API_BASE}/status`)
       .then(r => r.ok ? setBackendOk(true) : setBackendOk(false))
       .catch(() => setBackendOk(false));
   }, []);
 
-  // ── Synchronized Voice Guidance per Step with Immediate Clean Cancellation ──
+  // ── Handle Live Landmarks from Camera ──────────────────────────────────────
+  const handleLandmarks = useCallback((landmarks, videoEl) => {
+    setLiveLandmarks(landmarks);
+    if (videoEl) {
+      videoElementRef.current = videoEl;
+    }
+  }, []);
+
+  // ── Synchronized Voice Guidance per Step ──────────────────────────────────
   useEffect(() => {
     let timer = null;
 
     if (step === STEPS.WELCOME) {
       timer = setTimeout(() => {
-        speak('வணக்கம்! மெடிசென்ஸ் AI மருத்துவ உதவியாளருக்கு நல்வரவு. உங்கள் பதிவு முறையை தேர்வு செய்யவும்.');
+        speak('வணக்கம்! மெடிசென்ஸ் AI கியோஸ்கிற்கு நல்வரவு. உங்கள் முக அடையாளத்தை பதிவு செய்யவும் அல்லது ஏற்கனவே வந்தவராக இருந்தால் முகத்தை ஸ்கேன் செய்யவும்.');
       }, 400);
     } else if (step === STEPS.SCAN) {
       timer = setTimeout(() => {
@@ -163,7 +172,7 @@ export default function DoctorAssistant({ onBack }) {
     }
   }, [vitals, activePatient]);
 
-  // ── Generate prescription report ───────────────────────────────────────────
+  // ── Generate CDSS Prescription Report & Save Visit ─────────────────────────
   const generatePrescription = useCallback(async (answers) => {
     stopSpeaking();
     setStep(STEPS.PRESCRIPTION);
@@ -190,15 +199,23 @@ export default function DoctorAssistant({ onBack }) {
       const data = await res.json();
       setPrescription(data);
 
-      // Save this visit into patient's local history for future follow-ups
+      // Save visit record to fresh database
       if (activePatient?.uhid) {
-        addVisitToPatient(activePatient.uhid, {
-          date: new Date().toLocaleDateString('en-GB') + ' (Today)',
-          primary_complaint: primaryComplaint,
+        await patientDb.addVisit({
+          uhid: activePatient.uhid,
           vitals: vitals,
+          primary_complaint: primaryComplaint,
+          symptom_answers: answers,
+          triage: triage,
           triage_decision: data.triage_decision,
+          prescription: data,
+          assigned_route: data.assigned_role || 'nurse',
           doctor_notes: data.assessment_english,
         });
+
+        // Refresh active patient's local visit list
+        const updatedPat = await patientDb.getPatientByUhid(activePatient.uhid);
+        if (updatedPat) setActivePatient(updatedPat);
       }
     } catch (err) {
       console.error('Prescription error:', err);
@@ -253,6 +270,7 @@ export default function DoctorAssistant({ onBack }) {
     stopSpeaking();
     reset();
     setStep(STEPS.WELCOME);
+    setActivePatient(null);
     setPrimaryComplaint('');
     setCurrentQuestion(null);
     setSymptomAnswers([]);
@@ -282,7 +300,7 @@ export default function DoctorAssistant({ onBack }) {
       className="min-h-screen text-slate-100 flex flex-col"
       style={{ background: 'linear-gradient(135deg, #0a0f1e 0%, #0d1530 50%, #0a0f1e 100%)' }}
     >
-      {/* ── Top Nav ──────────────────────────────────────────────────────────── */}
+      {/* ── Top Header ───────────────────────────────────────────────────────── */}
       <header className="border-b border-slate-800 px-4 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <button
@@ -300,11 +318,11 @@ export default function DoctorAssistant({ onBack }) {
             <h1 className="text-sm font-bold flex items-center gap-2">
               <span>MediSense AI</span>
               <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-950/60 border border-cyan-700 text-cyan-300 font-mono">
-                CDSS Kiosk
+                Face ID & CDSS Kiosk
               </span>
             </h1>
             <p className="text-xs text-slate-500">
-              {activePatient ? `${activePatient.name} (${activePatient.uhid})` : 'மருத்துவ உதவியாளர் & CDSS'}
+              {activePatient ? `${activePatient.name} (${activePatient.uhid})` : 'Contactless rPPG Triage'}
             </p>
           </div>
         </div>
@@ -324,7 +342,7 @@ export default function DoctorAssistant({ onBack }) {
                   ? 'bg-gradient-to-r from-violet-600 to-pink-600 text-white shadow'
                   : 'text-slate-400 hover:text-slate-200'
               }`}
-              title="Switch to Dr. Pallavi (Female Voice)"
+              title="Dr. Pallavi (Female Voice)"
             >
               <span>👩‍⚕️ பல்லவி</span>
             </button>
@@ -339,7 +357,7 @@ export default function DoctorAssistant({ onBack }) {
                   ? 'bg-gradient-to-r from-cyan-600 to-blue-600 text-white shadow'
                   : 'text-slate-400 hover:text-slate-200'
               }`}
-              title="Switch to Dr. Valluvar (Male Voice)"
+              title="Dr. Valluvar (Male Voice)"
             >
               <span>👨‍⚕️ வள்ளுவர்</span>
             </button>
@@ -373,16 +391,18 @@ export default function DoctorAssistant({ onBack }) {
         </div>
       </header>
 
-      {/* ── Step Indicator ───────────────────────────────────────────────────── */}
+      {/* ── Step Progress Indicator ──────────────────────────────────────────── */}
       <div className="px-4 py-3 border-b border-slate-800/50">
         <div className="flex items-center justify-between max-w-lg mx-auto">
           {Object.entries(STEPS).map(([key, num]) => (
             <div key={num} className="flex items-center gap-1">
-              <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold transition-all
-                ${step === num ? 'bg-gradient-to-br from-cyan-500 to-blue-600 text-white shadow-lg shadow-cyan-900/40'
-                : step > num  ? 'bg-green-700 text-green-200'
-                :               'bg-slate-800 text-slate-600'}`}
-              >
+              <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold transition-all ${
+                step === num
+                  ? 'bg-gradient-to-br from-cyan-500 to-blue-600 text-white shadow-lg shadow-cyan-900/40'
+                  : step > num
+                  ? 'bg-green-700 text-green-200'
+                  : 'bg-slate-800 text-slate-600'
+              }`}>
                 {step > num ? '✓' : num}
               </div>
               {num < 5 && <div className={`w-8 h-0.5 ${step > num ? 'bg-green-700' : 'bg-slate-800'}`} />}
@@ -394,34 +414,45 @@ export default function DoctorAssistant({ onBack }) {
         </p>
       </div>
 
-      {/* ── Main Content ─────────────────────────────────────────────────────── */}
+      {/* ── Main Content Area ────────────────────────────────────────────────── */}
       <main className="flex-1 overflow-y-auto">
         <div className="max-w-2xl mx-auto px-4 py-6">
 
           {/* ════════════════════════════════════════════════════════════════════
-              STEP 1: KIOSK REGISTRATION (3 MODES)
+              STEP 1: KIOSK REGISTRATION (Face ID + Camera + 2 Options)
           ════════════════════════════════════════════════════════════════════ */}
           {step === STEPS.WELCOME && (
             <div className="space-y-6 text-center animate-fade-in">
               <div className="pt-2">
-                <div className="w-20 h-20 mx-auto rounded-full bg-gradient-to-br from-violet-600 to-cyan-500 flex items-center justify-center text-4xl shadow-2xl shadow-violet-900/50 mb-4">
+                <div className="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-br from-violet-600 to-cyan-500 flex items-center justify-center text-3xl shadow-xl shadow-violet-900/50 mb-3">
                   🏥
                 </div>
                 <h2 className="text-2xl font-bold text-white mb-1">
                   MediSense AI Kiosk
                 </h2>
-                <p className="text-sm text-cyan-400 font-medium mb-1">
-                  Contactless rPPG Triage & CDSS System
+                <p className="text-xs text-cyan-400 font-medium mb-1">
+                  Contactless rPPG Triage & Clinical Decision Support System
                 </p>
-                <p className="text-xs text-slate-400 leading-relaxed max-w-sm mx-auto">
-                  3 Registration Modes • Repeat Visit Longitudinal Tracking • Doctor Sign-off
+                <p className="text-xs text-slate-400 max-w-sm mx-auto">
+                  Face ID Biometric Registration • Longitudinal Trend Tracking • Doctor/Nurse Sign-off
                 </p>
               </div>
 
-              {/* 3 Kiosk Modes Component */}
+              {/* Live Face Detection Camera preview for Face ID Lock & Recognition */}
+              <div className="medical-card p-3 glow-cyan max-w-md mx-auto">
+                <p className="text-[11px] font-mono text-slate-400 uppercase tracking-widest mb-2 text-center">
+                  📷 Live Face ID Sensor (நேரடி முக உணரி)
+                </p>
+                <FaceCapture
+                  phase="idle"
+                  onFrame={pushFrame}
+                  onFaceDetected={setFaceDetected}
+                  onLandmarks={handleLandmarks}
+                />
+              </div>
+
+              {/* 2-Option Kiosk Mode Selector Component */}
               <KioskModeSelector
-                selectedMode={kioskMode}
-                onSelectMode={setKioskMode}
                 activePatient={activePatient}
                 onSelectPatient={setActivePatient}
                 onProceed={() => {
@@ -429,41 +460,23 @@ export default function DoctorAssistant({ onBack }) {
                   setStep(STEPS.SCAN);
                 }}
                 speak={speak}
+                liveLandmarks={liveLandmarks}
+                videoElement={videoElementRef.current}
               />
-
-              {/* Feature Highlights */}
-              <div className="bg-slate-800/40 border border-slate-700/60 rounded-2xl p-4 text-left grid grid-cols-2 gap-3 text-xs">
-                <div className="flex items-center gap-2">
-                  <span className="text-base">📷</span>
-                  <span className="text-slate-300">Contactless 30s rPPG</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-base">📈</span>
-                  <span className="text-slate-300">Longitudinal Vitals Delta</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-base">🗣️</span>
-                  <span className="text-slate-300">Tamil AI Neural Voice</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-base">👨‍⚕️</span>
-                  <span className="text-slate-300">Doctor CDSS OPD Tokens</span>
-                </div>
-              </div>
             </div>
           )}
 
           {/* ════════════════════════════════════════════════════════════════════
-              STEP 2: SCAN (with Nurse Accessibility Accommodations)
+              STEP 2: 30s rPPG SCAN
           ════════════════════════════════════════════════════════════════════ */}
           {step === STEPS.SCAN && (
             <div className="space-y-4 animate-fade-in text-left">
               <div className="text-center mb-2">
                 <h2 className="text-lg font-bold text-white">
-                  {kioskMode === 'nurse' ? '👩‍⚕️ முக ஸ்கேன் (Face Scan)' : 'முக ஸ்கேன் (Contactless rPPG)'}
+                  {activePatient?.is_nurse_assisted ? '👩‍⚕️ முக ஸ்கேன் (Nurse Assisted Scan)' : 'முக ஸ்கேன் (Contactless rPPG)'}
                 </h2>
                 <p className="text-xs text-slate-400">
-                  {activePatient ? `Patient: ${activePatient.name} (${activePatient.uhid})` : 'Position your face in the camera'}
+                  {activePatient ? `Patient: ${activePatient.name} (${activePatient.uhid})` : 'Position face inside camera frame'}
                 </p>
               </div>
 
@@ -473,6 +486,7 @@ export default function DoctorAssistant({ onBack }) {
                   phase={phase}
                   onFrame={pushFrame}
                   onFaceDetected={setFaceDetected}
+                  onLandmarks={handleLandmarks}
                 />
               </div>
 
@@ -481,7 +495,7 @@ export default function DoctorAssistant({ onBack }) {
                 <WaveChart
                   waveBuffer={waveBuffer}
                   phase={phase}
-                  title="rPPG Signal (POS/CHROM Algorithm)"
+                  title="rPPG Pulse Waveform (POS/CHROM DSP Fusion)"
                 />
               )}
 
@@ -501,7 +515,7 @@ export default function DoctorAssistant({ onBack }) {
                   disabled={!canScan || isActive}
                   className={`py-4 rounded-xl font-bold text-sm transition-all ${
                     canScan && !isActive
-                      ? 'bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white shadow-lg scale-[1.01]'
+                      ? 'bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white shadow-lg shadow-cyan-900/50 scale-[1.01]'
                       : 'bg-slate-800 text-slate-600 cursor-not-allowed'
                   }`}
                 >
@@ -546,7 +560,7 @@ export default function DoctorAssistant({ onBack }) {
                 </p>
               </div>
 
-              {/* Repeat Visit Longitudinal Comparison (if returning patient has prior visit) */}
+              {/* Repeat Visit Longitudinal Comparison (if returning patient) */}
               {activePatient?.past_visits?.length > 0 && (
                 <LongitudinalComparison
                   currentVitals={vitals}
@@ -591,7 +605,7 @@ export default function DoctorAssistant({ onBack }) {
           )}
 
           {/* ════════════════════════════════════════════════════════════════════
-              STEP 4: SYMPTOM INTERVIEW
+              STEP 4: DYNAMIC AI SYMPTOM INTERVIEW
           ════════════════════════════════════════════════════════════════════ */}
           {step === STEPS.INTERVIEW && (
             <div className="space-y-4 animate-fade-in text-left">
@@ -606,7 +620,7 @@ export default function DoctorAssistant({ onBack }) {
           )}
 
           {/* ════════════════════════════════════════════════════════════════════
-              STEP 5: CDSS PRESCRIPTION REPORT & DOCTOR VERIFICATION
+              STEP 5: CDSS PRESCRIPTION REPORT & DOCTOR/NURSE VERIFICATION
           ════════════════════════════════════════════════════════════════════ */}
           {step === STEPS.PRESCRIPTION && (
             <div className="space-y-4 animate-fade-in text-left">
@@ -643,7 +657,7 @@ export default function DoctorAssistant({ onBack }) {
                     doctorToken={doctorToken}
                   />
 
-                  {/* Doctor Verification Modal Dialog */}
+                  {/* Doctor/Nurse Verification Modal Dialog */}
                   <DoctorVerificationModal
                     isOpen={doctorModalOpen}
                     onClose={() => setDoctorModalOpen(false)}

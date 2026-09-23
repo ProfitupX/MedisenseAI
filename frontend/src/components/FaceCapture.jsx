@@ -61,7 +61,7 @@ function mergeROIs(...rois) {
   };
 }
 
-export default function FaceCapture({ phase, onFrame, onFaceDetected }) {
+export default function FaceCapture({ phase, onFrame, onFaceDetected, onLandmarks }) {
   const videoRef        = useRef(null);
   const displayCanvasRef = useRef(null);
   const cropCanvasRef   = useRef(null);
@@ -208,6 +208,9 @@ export default function FaceCapture({ phase, onFrame, onFaceDetected }) {
           onFrame?.(merged);
         }
       }
+
+      // Notify parent of live landmarks for Face ID matching & registration
+      onLandmarks?.(landmarks, videoRef.current);
 
       // Draw ROI bounding boxes
       const drawROIBox = (lmIndices, color) => {

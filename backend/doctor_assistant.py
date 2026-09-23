@@ -65,7 +65,9 @@ Analyze the comprehensive patient profile:
 Clinical Pharmacology Rules:
 - Suggest ONLY safe, standard OTC medications appropriate for the diagnosed condition with exact dosage, frequency, and duration (e.g. Paracetamol 650mg TDS for fever/pain; Cetirizine 10mg OD HS for allergic rhinitis; ORS hydration; Pantoprazole 40mg OD for gastritis; Steam inhalation for congestion).
 - CRITICAL CONTRAINDICATION SAFETY: If BP is elevated (SBP >= 140 or DBP >= 90), WARN strictly against oral pseudoephedrine/decongestants.
-- If SpO2 < 94% or HR > 110 or severe chest pain, classify as Emergency or See Doctor in 24h.
+- SEVERITY ROUTING RULE:
+  - If condition is Severe / High Risk / Emergency / Elevated BP (SBP >= 140) / SpO2 < 94% / Chest pain: Set "assigned_role": "doctor", "assigned_destination": "Doctor Consultation (மருத்துவர் அறை - OPD Room)".
+  - If condition is Normal / Stable / Mild self-limiting symptoms: Set "assigned_role": "nurse", "assigned_destination": "Nurse Triage & Wellness Desk (செவிலியர் மையம்)".
 - All advice must be compassionate, clear, and provided in both Tanglish AND formal Tamil script.
 - Return ONLY valid JSON matching this schema:
 
@@ -91,6 +93,10 @@ Clinical Pharmacology Rules:
   "triage_reason": "<Why this decision based on vitals + symptoms>",
   "triage_tanglish": "<Actionable triage advice in Tanglish>",
   "triage_tamil": "<Actionable triage advice in Tamil script>",
+  "assigned_role": "doctor" | "nurse",
+  "assigned_destination": "<Doctor Consultation / Nurse Wellness Desk>",
+  "routing_advice_tamil": "<Specific destination instruction in Tamil>",
+  "routing_advice_tanglish": "<Specific destination instruction in Tanglish>",
   "follow_up": "<When to see doctor or warning signs to watch for>",
   "disclaimer": "இந்த பரிந்துரை முதற்கட்ட AI ஆய்வறிக்கை மட்டுமே. நேரடி மருத்துவ பரிசோதனைக்கு மருத்துவரை அணுகவும். / Preliminary AI screening only."
 }"""
@@ -737,13 +743,17 @@ def _adaptive_clinical_prescription(
         triage_reason = "Borderline vitals or persistent symptomatic illness requiring clinical examination"
         triage_tanglish = "⚠️ Adutha 24 mani nerathil oru certified MBBS Doctor-ai paarthu direct checkup edungal."
         triage_tamil = "⚠️ அடுத்த 24 மணி நேரத்திற்குள் மருத்துவரை நேரில் சந்தித்து உரிய பரிசோதனை செய்யவும்."
-        follow_up = "Consult an in-person physician tomorrow morning. Re-test vitals if symptoms worsen."
+    # Severity Routing Assignment: Emergency/High Risk -> Doctor; Normal/Stable -> Nurse
+    if triage_decision == "Emergency" or triage_decision == "See Doctor in 24h" or sbp >= 140 or spo2 < 94 or hr > 105:
+        assigned_role = "doctor"
+        assigned_destination = "Doctor Consultation (மருத்துவர் அறை - OPD Room 03)"
+        routing_advice_tanglish = "High Risk / Elevated vitals detected. Direct consultation with Doctor in OPD Room is required."
+        routing_advice_tamil = "அவசர / மாறுபட்ட உடல் அளவுகள் கண்டறியப்பட்டுள்ளதால் நேரடியாக மருத்துவர் அறைக்கு (OPD Room) செல்லவும்."
     else:
-        triage_decision = "Self-Care"
-        triage_reason = "Mild self-limiting symptoms with stable cardiovascular and respiratory vitals"
-        triage_tanglish = "✅ Home-la rest eduthu keezhey ulla care plan follow pannavum. 2-3 naalil nandraga aagivdum."
-        triage_tamil = "✅ வீட்டில் ஓய்வெடுத்து கீழே உள்ள பராமரிப்பு திட்டத்தை பின்பற்றவும். 2 முதல் 3 நாட்களில் குணமாகிவிடும்."
-        follow_up = "If symptoms do not improve after 48 hours or if fever exceeds 102°F, consult a physician."
+        assigned_role = "nurse"
+        assigned_destination = "Nurse Triage & Wellness Desk (செவிலியர் உதவி மையம் - Desk 01)"
+        routing_advice_tanglish = "Vitals within normal limits. Proceed to Nurse Triage Desk for care validation."
+        routing_advice_tamil = "உடல் அளவுகள் சாதாரணமாக உள்ளன. செவிலியர் மையத்தில் (Nurse Desk) ஆலோசனை மற்றும் சரிபார்ப்பு டோக்கன் பெறவும்."
 
     primary_title = conditions[0] if conditions else "Clinical Health Assessment"
 
@@ -760,6 +770,10 @@ def _adaptive_clinical_prescription(
         "triage_reason": triage_reason,
         "triage_tanglish": triage_tanglish,
         "triage_tamil": triage_tamil,
+        "assigned_role": assigned_role,
+        "assigned_destination": assigned_destination,
+        "routing_advice_tamil": routing_advice_tamil,
+        "routing_advice_tanglish": routing_advice_tanglish,
         "follow_up": follow_up,
         "disclaimer": "இந்த பரிசோதனை முதற்கட்ட AI ஆய்வறிக்கை மட்டுமே. நேரடி மருத்துவ ஆலோசனையை மாற்றாது. / This is preliminary AI screening only.",
         "longitudinal_notes": longitudinal_notes
